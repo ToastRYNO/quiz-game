@@ -47,7 +47,7 @@
     <style>
         body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
         canvas { display: block; }
-        #startScreen, #quizOverlay, #passwordPanel, #adminPanel, #multiplayerPanel, #joinPanel {
+        #startScreen, #quizOverlay, #passwordPanel, #adminPanel, #multiplayerChoicePanel, #hostPanel, #joinPanel {
             position: absolute;
             top: 50%;
             left: 50%;
@@ -61,7 +61,7 @@
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
         }
         #startScreen { display: block; }
-        #quizOverlay, #passwordPanel, #adminPanel, #multiplayerPanel, #joinPanel { display: none; }
+        #quizOverlay, #passwordPanel, #adminPanel, #multiplayerChoicePanel, #hostPanel, #joinPanel { display: none; }
         button {
             margin: 8px;
             padding: 12px 24px;
@@ -97,15 +97,18 @@
         #timer { position: absolute; top: 15px; left: 15px; font-size: 18px; z-index: 10; }
         #score { position: absolute; top: 15px; right: 15px; font-size: 18px; z-index: 10; }
         #loading { display: none; font-style: italic; }
+        #gameCode { font-weight: bold; color: #d81b60; font-size: 18px; }
     </style>
 </head>
 <body>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
     <canvas id="gameCanvas"></canvas>
     <div id="startScreen">
         <h2>Quiz Game</h2>
         <button onclick="startGame('single')">Single-Player</button>
-        <button onclick="showMultiplayerPanel()">Multiplayer</button>
-        <button onclick="showJoinPanel()">Join Game</button>
+        <button onclick="showMultiplayerChoice()">Multiplayer</button>
+        <button onclick="startGame('practice')">Practice Mode</button>
         <button onclick="showPasswordPanel()">Admin</button>
     </div>
     <div id="timer">Time: 10</div>
@@ -142,402 +145,455 @@
         <div id="questionList"></div>
         <button onclick="closeAdmin()">Close</button>
     </div>
-    <div id="multiplayerPanel">
+    <div id="multiplayerChoicePanel">
+        <h2>Multiplayer</h2>
+        <button onclick="showHostPanel()">Host</button>
+        <button onclick="showJoinPanel()">Join</button>
+        <button onclick="closeMultiplayerChoice()">Cancel</button>
+    </div>
+    <div id="hostPanel">
         <h2>Host Multiplayer</h2>
         <p id="gameCode">Starting...</p>
         <p id="loading">Loading...</p>
         <h3>Players</h3>
         <div id="playerList"></div>
         <button onclick="startMultiplayerGame()">Start Game</button>
-        <button onclick="closeMultiplayerPanel()">Cancel</button>
+        <button onclick="closeHostPanel()">Cancel</button>
     </div>
     <div id="joinPanel">
         <h2>Join Game</h2>
-        <input id="gameCodeInput" placeholder="Enter 6-digit code" type="text">
+        <input id="gameCodeInput" placeholder="Enter 4-digit code" type="text">
         <input id="playerName" placeholder="Your name" type="text">
         <button onclick="joinGame()">Join</button>
         <button onclick="closeJoinPanel()">Cancel</button>
     </div>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
-    <script src="/socket.io/socket.io.js"></script>
     <script>
-        const socket = io();
-        let questions = [
-            { question: "What is 2+2?", answers: ["3", "4", "5", "6"], correct: 1 },
-            { question: "Capital of France?", answers: ["Paris", "London", "Berlin", "Madrid"], correct: 0 }
-        ];
-        let currentQuestion = 0;
-        let score = 0;
-        let timeLeft = 10;
-        let timerInterval;
-        let gameMode = '';
-        let editingIndex = -1;
-        let isHost = false;
+        window.onload = () => {
+            // Variable Declarations
+            let socket = io({ reconnectionAttempts: 3 });
+            let isHost = false;
+            let questions = [
+                { question: "What is 2+2?", answers: ["3", "4", "5", "6"], correct: 1 },
+                { question: "Capital of France?", answers: ["Paris", "London", "Berlin", "Madrid"], correct: 0 }
+            ];
+            let currentQuestion = 0;
+            let score = 0;
+            let timeLeft = 10;
+            let timerInterval;
+            let gameMode = '';
+            let editingIndex = -1;
 
-        // Three.js Setup
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas') });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setClearColor(0x0000ff); // Blue background
-        const stage = new THREE.Mesh(
-            new THREE.BoxGeometry(10, 0.2, 5),
-            new THREE.MeshBasicMaterial({ color: 0x222222 }) // Darker stage
-        );
-        stage.position.y = -1;
-        scene.add(stage);
-        const screen = new THREE.Mesh(
-            new THREE.PlaneGeometry(6, 3),
-            new THREE.MeshBasicMaterial({ color: 0xdddddd }) // Lighter screen
-        );
-        screen.position.set(0, 1, -2);
-        scene.add(screen);
-        camera.position.set(0, 2, 5);
-        camera.lookAt(0, 0, 0);
-        function animate() {
-            requestAnimationFrame(animate);
-            renderer.render(scene, camera);
-        }
-        animate();
-
-        // Game Logic
-        function startGame(mode) {
-            console.log(`Starting ${mode} mode`);
-            gameMode = mode;
-            document.getElementById('startScreen').style.display = 'none';
-            if (mode === 'practice') timeLeft = Infinity;
-            showQuestion(0);
-        }
-
-        function startMultiplayerGame() {
-            document.getElementById('loading').style.display = 'block';
-            socket.emit('startMultiplayerGame');
-        }
-
-        function startTimer() {
-            if (gameMode === 'practice') return;
-            timeLeft = 10;
-            document.getElementById('timer').textContent = `Time: ${timeLeft}`;
-            timerInterval = setInterval(() => {
-                timeLeft--;
-                document.getElementById('timer').textContent = `Time: ${timeLeft}`;
-                if (timeLeft <= 0) {
-                    clearInterval(timerInterval);
-                    checkAnswer(-1);
-                }
-            }, 1000);
-        }
-
-        function showQuestion(index) {
-            if (questions.length === 0) {
-                alert('No questions available! Add questions in Admin.');
-                document.getElementById('startScreen').style.display = 'block';
-                return;
+            // Three.js Setup
+            const scene = new THREE.Scene();
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gameCanvas') });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x0000ff); // Blue background
+            const stage = new THREE.Mesh(
+                new THREE.BoxGeometry(10, 0.2, 5),
+                new THREE.MeshBasicMaterial({ color: 0x222222 })
+            );
+            stage.position.y = -1;
+            scene.add(stage);
+            const screen = new THREE.Mesh(
+                new THREE.PlaneGeometry(6, 3),
+                new THREE.MeshBasicMaterial({ color: 0xdddddd })
+            );
+            screen.position.set(0, 1, -2);
+            scene.add(screen);
+            camera.position.set(0, 2, 5);
+            camera.lookAt(0, 0, 0);
+            function animate() {
+                requestAnimationFrame(animate);
+                renderer.render(scene, camera);
             }
-            try {
-                const quizOverlay = document.getElementById('quizOverlay');
-                const questionElem = document.getElementById('question');
-                const answerButtons = [
-                    document.getElementById('answer1'),
-                    document.getElementById('answer2'),
-                    document.getElementById('answer3'),
-                    document.getElementById('answer4')
-                ];
-                questionElem.textContent = questions[index].question;
-                questions[index].answers.forEach((answer, i) => {
-                    answerButtons[i].textContent = answer;
-                    answerButtons[i].onclick = () => {
-                        if (gameMode !== 'practice') clearInterval(timerInterval);
-                        checkAnswer(i);
-                    };
-                });
-                quizOverlay.style.display = 'block';
-                if (gameMode !== 'practice') startTimer();
-            } catch (e) {
-                console.error('Error in showQuestion:', e);
-                alert('Error displaying question.');
-            }
-        }
+            animate();
 
-        function checkAnswer(selected) {
-            try {
-                const quizOverlay = document.getElementById('quizOverlay');
-                if (gameMode === 'multiplayer') {
-                    socket.emit('submitAnswer', { answer: selected, timeLeft });
-                    quizOverlay.style.display = 'none';
-                    return;
-                }
-                if (selected === questions[currentQuestion].correct) {
-                    if (gameMode !== 'practice') {
-                        score += Math.max(100 * timeLeft, 100);
-                        document.getElementById('score').textContent = `Score: ${score}`;
-                    }
-                    alert("Correct!");
-                } else {
-                    alert("Incorrect!");
-                }
-                quizOverlay.style.display = 'none';
-                currentQuestion++;
-                if (currentQuestion < questions.length) {
-                    showQuestion(currentQuestion);
-                } else {
-                    alert(gameMode === 'practice' ? 'Practice Complete!' : `Game Over! Score: ${score}`);
-                    document.getElementById('startScreen').style.display = 'block';
-                    currentQuestion = 0;
-                    score = 0;
-                    document.getElementById('score').textContent = 'Score: 0';
-                }
-            } catch (e) {
-                console.error('Error in checkAnswer:', e);
-                alert('Error processing answer.');
-            }
-        }
-
-        // Multiplayer Logic
-        function showMultiplayerPanel() {
-            document.getElementById('startScreen').style.display = 'none';
-            document.getElementById('multiplayerPanel').style.display = 'block';
-            document.getElementById('loading').style.display = 'none';
-            isHost = true;
-            socket.emit('hostGame');
-        }
-
-        function closeMultiplayerPanel() {
-            document.getElementById('multiplayerPanel').style.display = 'none';
-            document.getElementById('startScreen').style.display = 'block';
-            socket.emit('leaveGame');
-            isHost = false;
-        }
-
-        function showJoinPanel() {
-            document.getElementById('startScreen').style.display = 'none';
-            document.getElementById('joinPanel').style.display = 'block';
-        }
-
-        function closeJoinPanel() {
-            document.getElementById('joinPanel').style.display = 'none';
-            document.getElementById('startScreen').style.display = 'block';
-        }
-
-        function joinGame() {
-            const code = document.getElementById('gameCodeInput').value.trim();
-            const name = document.getElementById('playerName').value.trim();
-            if (!code.match(/^\d{6}$/)) {
-                alert('Please enter a valid 6-digit code!');
-                return;
-            }
-            if (!name) {
-                alert('Please enter a name!');
-                return;
-            }
-            socket.emit('joinGame', { code, name });
-        }
-
-        socket.on('gameCode', (code) => {
-            document.getElementById('gameCode').textContent = `Game Code: ${code}`;
-            document.getElementById('loading').style.display = 'none';
-        });
-
-        socket.on('playerList', (players) => {
-            const playerList = document.getElementById('playerList');
-            playerList.innerHTML = '';
-            players.forEach((p) => {
-                const div = document.createElement('div');
-                div.textContent = `${p.name} (Score: ${p.score})`;
-                playerList.appendChild(div);
+            // Socket.IO Events
+            socket.on('connect', () => {
+                console.log('Connected to Socket.IO server');
             });
-        });
 
-        socket.on('startGame', () => {
-            document.getElementById('multiplayerPanel').style.display = 'none';
-            document.getElementById('joinPanel').style.display = 'none';
-            gameMode = 'multiplayer';
-            currentQuestion = 0;
-            score = 0;
-            document.getElementById('score').textContent = 'Score: 0';
-            showQuestion(currentQuestion);
-        });
-
-        socket.on('nextQuestion', (index) => {
-            currentQuestion = index;
-            showQuestion(index);
-        });
-
-        socket.on('gameResult', (results) => {
-            const quizOverlay = document.getElementById('quizOverlay');
-            quizOverlay.style.display = 'none';
-            let resultText = 'Game Over!\n';
-            results.forEach((r) => {
-                resultText += `${r.name}: ${r.score}\n`;
+            socket.on('gameCode', (code) => {
+                console.log(`Received game code: ${code}`);
+                document.getElementById('gameCode').textContent = `Game Code: ${code}`;
+                document.getElementById('loading').style.display = 'none';
             });
-            alert(resultText);
-            document.getElementById('startScreen').style.display = 'block';
-            currentQuestion = 0;
-            score = 0;
-            document.getElementById('score').textContent = 'Score: 0';
-            isHost = false;
-        });
 
-        socket.on('error', (msg) => {
-            alert(msg);
-            closeJoinPanel();
-            closeMultiplayerPanel();
-        });
-
-        // Admin Logic
-        function showPasswordPanel() {
-            console.log('Admin button clicked');
-            document.getElementById('startScreen').style.display = 'none';
-            document.getElementById('passwordPanel').style.display = 'block';
-            document.getElementById('adminPassword').value = '';
-        }
-
-        function closePasswordPanel() {
-            console.log('Closing password panel');
-            document.getElementById('passwordPanel').style.display = 'none';
-            document.getElementById('startScreen').style.display = 'block';
-        }
-
-        function verifyPassword() {
-            console.log('Verifying password');
-            try {
-                const password = document.getElementById('adminPassword').value.trim();
-                if (password === "1234") {
-                    console.log('Password correct, opening admin panel');
-                    document.getElementById('passwordPanel').style.display = 'none';
-                    document.getElementById('adminPanel').style.display = 'block';
-                    updateQuestionList();
-                } else {
-                    console.log('Incorrect password');
-                    alert("Incorrect password!");
-                }
-            } catch (e) {
-                console.error('Error verifying password:', e);
-                alert('Error verifying password.');
-            }
-        }
-
-        function closeAdmin() {
-            console.log('Closing admin panel');
-            document.getElementById('adminPanel').style.display = 'none';
-            document.getElementById('startScreen').style.display = 'block';
-            editingIndex = -1;
-            clearForm();
-        }
-
-        function saveQuestion() {
-            console.log('Save question clicked');
-            try {
-                const question = document.getElementById('newQuestion').value.trim();
-                const answers = [
-                    document.getElementById('newAnswer1').value.trim(),
-                    document.getElementById('newAnswer2').value.trim(),
-                    document.getElementById('newAnswer3').value.trim(),
-                    document.getElementById('newAnswer4').value.trim()
-                ];
-                const correct = parseInt(document.getElementById('correctAnswer').value);
-
-                if (!question) {
-                    alert("Question cannot be empty!");
-                    return;
-                }
-                if (answers.some(a => !a)) {
-                    alert("All answers must be filled!");
-                    return;
-                }
-                if (isNaN(correct) || correct < 0 || correct > 3) {
-                    alert("Select a valid correct answer!");
-                    return;
-                }
-                if (question.length > 100 || answers.some(a => a.length > 50)) {
-                    alert("Question or answers too long!");
-                    return;
-                }
-
-                if (editingIndex === -1) {
-                    questions.push({ question, answers, correct });
-                    console.log('Question added:', question);
-                    alert("Question added!");
-                } else {
-                    questions[editingIndex] = { question, answers, correct };
-                    console.log('Question edited:', question);
-                    alert("Question updated!");
-                    editingIndex = -1;
-                }
-                updateQuestionList();
-                clearForm();
-            } catch (e) {
-                console.error('Error saving question:', e);
-                alert('Error saving question.');
-            }
-        }
-
-        function editQuestion(index) {
-            console.log(`Edit question ${index} clicked`);
-            try {
-                editingIndex = index;
-                const q = questions[index];
-                document.getElementById('newQuestion').value = q.question;
-                document.getElementById('newAnswer1').value = q.answers[0];
-                document.getElementById('newAnswer2').value = q.answers[1];
-                document.getElementById('newAnswer3').value = q.answers[2];
-                document.getElementById('newAnswer4').value = q.answers[3];
-                document.getElementById('correctAnswer').value = q.correct;
-                document.getElementById('adminPanel').scrollIntoView();
-            } catch (e) {
-                console.error('Error editing question:', e);
-                alert('Error editing question.');
-            }
-        }
-
-        function removeQuestion(index) {
-            console.log(`Remove question ${index} clicked`);
-            try {
-                if (confirm('Are you sure you want to delete this question?')) {
-                    questions.splice(index, 1);
-                    console.log('Question removed');
-                    updateQuestionList();
-                    alert('Question deleted!');
-                }
-            } catch (e) {
-                console.error('Error removing question:', e);
-                alert('Error removing question.');
-            }
-        }
-
-        function updateQuestionList() {
-            console.log('Updating question list');
-            try {
-                const questionList = document.getElementById('questionList');
-                questionList.innerHTML = '';
-                questions.forEach((q, i) => {
+            socket.on('playerList', (players) => {
+                console.log('Received player list:', players);
+                const playerList = document.getElementById('playerList');
+                playerList.innerHTML = '';
+                players.forEach((p) => {
                     const div = document.createElement('div');
-                    const truncated = q.question.length > 30 ? q.question.substring(0, 27) + '...' : q.question;
-                    div.textContent = `${i + 1}. ${truncated}`;
-                    const editBtn = document.createElement('button');
-                    editBtn.textContent = 'Edit';
-                    editBtn.onclick = () => editQuestion(i);
-                    const deleteBtn = document.createElement('button');
-                    deleteBtn.textContent = 'Delete';
-                    deleteBtn.onclick = () => removeQuestion(i);
-                    div.appendChild(editBtn);
-                    div.appendChild(deleteBtn);
-                    questionList.appendChild(div);
+                    div.textContent = `${p.name} (Score: ${p.score})`;
+                    playerList.appendChild(div);
                 });
-            } catch (e) {
-                console.error('Error updating question list:', e);
-                alert('Error updating question list.');
-            }
-        }
+            });
 
-        function clearForm() {
-            document.getElementById('newQuestion').value = '';
-            document.getElementById('newAnswer1').value = '';
-            document.getElementById('newAnswer2').value = '';
-            document.getElementById('newAnswer3').value = '';
-            document.getElementById('newAnswer4').value = '';
-            document.getElementById('correctAnswer').value = '0';
-        }
+            socket.on('startGame', (gameQuestions) => {
+                console.log('Starting multiplayer game');
+                questions = gameQuestions;
+                document.getElementById('hostPanel').style.display = 'none';
+                document.getElementById('joinPanel').style.display = 'none';
+                gameMode = 'multiplayer';
+                currentQuestion = 0;
+                score = 0;
+                document.getElementById('score').textContent = 'Score: 0';
+                showQuestion(currentQuestion);
+            });
+
+            socket.on('nextQuestion', (index) => {
+                console.log(`Next question: ${index}`);
+                currentQuestion = index;
+                showQuestion(index);
+            });
+
+            socket.on('gameResult', (results) => {
+                console.log('Game results:', results);
+                const quizOverlay = document.getElementById('quizOverlay');
+                quizOverlay.style.display = 'none';
+                let resultText = 'Game Over!\n';
+                results.forEach((r) => {
+                    resultText += `${r.name}: ${r.score}\n`;
+                });
+                alert(resultText);
+                document.getElementById('startScreen').style.display = 'block';
+                currentQuestion = 0;
+                score = 0;
+                document.getElementById('score').textContent = 'Score: 0';
+                isHost = false;
+            });
+
+            socket.on('error', (msg) => {
+                console.log('Error:', msg);
+                alert(msg);
+                closeJoinPanel();
+                closeHostPanel();
+            });
+
+            socket.on('connect_error', () => {
+                console.log('Socket.IO connection error');
+                alert('Failed to connect to server. Please try again.');
+                closeHostPanel();
+                closeJoinPanel();
+            });
+
+            // Game Logic
+            function startGame(mode) {
+                console.log(`Starting ${mode} mode`);
+                gameMode = mode;
+                document.getElementById('startScreen').style.display = 'none';
+                if (mode === 'practice') timeLeft = Infinity;
+                showQuestion(0);
+            }
+
+            function startMultiplayerGame() {
+                console.log('Starting multiplayer game');
+                document.getElementById('loading').style.display = 'block';
+                socket.emit('startMultiplayerGame');
+            }
+
+            function startTimer() {
+                if (gameMode === 'practice') return;
+                timeLeft = 10;
+                document.getElementById('timer').textContent = `Time: ${timeLeft}`;
+                timerInterval = setInterval(() => {
+                    timeLeft--;
+                    document.getElementById('timer').textContent = `Time: ${timeLeft}`;
+                    if (timeLeft <= 0) {
+                        clearInterval(timerInterval);
+                        checkAnswer(-1);
+                    }
+                }, 1000);
+            }
+
+            function showQuestion(index) {
+                if (questions.length === 0) {
+                    alert('No questions available! Add questions in Admin.');
+                    document.getElementById('startScreen').style.display = 'block';
+                    return;
+                }
+                try {
+                    const quizOverlay = document.getElementById('quizOverlay');
+                    const questionElem = document.getElementById('question');
+                    const answerButtons = [
+                        document.getElementById('answer1'),
+                        document.getElementById('answer2'),
+                        document.getElementById('answer3'),
+                        document.getElementById('answer4')
+                    ];
+                    questionElem.textContent = questions[index].question;
+                    questions[index].answers.forEach((answer, i) => {
+                        answerButtons[i].textContent = answer;
+                        answerButtons[i].onclick = () => {
+                            if (gameMode !== 'practice') clearInterval(timerInterval);
+                            checkAnswer(i);
+                        };
+                    });
+                    quizOverlay.style.display = 'block';
+                    if (gameMode !== 'practice') startTimer();
+                } catch (e) {
+                    console.error('Error in showQuestion:', e);
+                    alert('Error displaying question.');
+                }
+            }
+
+            function checkAnswer(selected) {
+                try {
+                    const quizOverlay = document.getElementById('quizOverlay');
+                    if (gameMode === 'multiplayer') {
+                        socket.emit('submitAnswer', { answer: selected, timeLeft });
+                        quizOverlay.style.display = 'none';
+                        return;
+                    }
+                    if (selected === questions[currentQuestion].correct) {
+                        if (gameMode !== 'practice') {
+                            score += Math.max(100 * timeLeft, 100);
+                            document.getElementById('score').textContent = `Score: ${score}`;
+                        }
+                        alert("Correct!");
+                    } else {
+                        alert("Incorrect!");
+                    }
+                    quizOverlay.style.display = 'none';
+                    currentQuestion++;
+                    if (currentQuestion < questions.length) {
+                        showQuestion(currentQuestion);
+                    } else {
+                        alert(gameMode === 'practice' ? 'Practice Complete!' : `Game Over! Score: ${score}`);
+                        document.getElementById('startScreen').style.display = 'block';
+                        currentQuestion = 0;
+                        score = 0;
+                        document.getElementById('score').textContent = 'Score: 0';
+                    }
+                } catch (e) {
+                    console.error('Error in checkAnswer:', e);
+                    alert('Error processing answer.');
+                }
+            }
+
+            // Multiplayer Logic
+            function showMultiplayerChoice() {
+                console.log('Showing multiplayer choice panel');
+                document.getElementById('startScreen').style.display = 'none';
+                document.getElementById('multiplayerChoicePanel').style.display = 'block';
+            }
+
+            function closeMultiplayerChoice() {
+                document.getElementById('multiplayerChoicePanel').style.display = 'none';
+                document.getElementById('startScreen').style.display = 'block';
+            }
+
+            function showHostPanel() {
+                console.log('Showing host panel');
+                document.getElementById('multiplayerChoicePanel').style.display = 'none';
+                document.getElementById('hostPanel').style.display = 'block';
+                document.getElementById('gameCode').textContent = 'Starting...';
+                document.getElementById('loading').style.display = 'block';
+                isHost = true;
+                socket.emit('hostGame', questions);
+                setTimeout(() => {
+                    if (document.getElementById('gameCode').textContent === 'Starting...') {
+                        console.log('Game code timeout');
+                        alert('Failed to generate game code. Please try again.');
+                        closeHostPanel();
+                    }
+                }, 5000);
+            }
+
+            function closeHostPanel() {
+                console.log('Closing host panel');
+                document.getElementById('hostPanel').style.display = 'none';
+                document.getElementById('startScreen').style.display = 'block';
+                socket.emit('leaveGame');
+                isHost = false;
+            }
+
+            function showJoinPanel() {
+                console.log('Showing join panel');
+                document.getElementById('multiplayerChoicePanel').style.display = 'none';
+                document.getElementById('joinPanel').style.display = 'block';
+                document.getElementById('gameCodeInput').value = '';
+                document.getElementById('playerName').value = '';
+            }
+
+            function closeJoinPanel() {
+                console.log('Closing join panel');
+                document.getElementById('joinPanel').style.display = 'none';
+                document.getElementById('startScreen').style.display = 'block';
+            }
+
+            function joinGame() {
+                const code = document.getElementById('gameCodeInput').value.trim();
+                const name = document.getElementById('playerName').value.trim();
+                if (!code.match(/^\d{4}$/)) {
+                    alert('Please enter a valid 4-digit code!');
+                    return;
+                }
+                if (!name || name.length > 20) {
+                    alert('Please enter a name (1-20 characters)!');
+                    return;
+                }
+                console.log(`Joining game with code ${code} and name ${name}`);
+                socket.emit('joinGame', { code, name });
+            }
+
+            // Admin Logic
+            function showPasswordPanel() {
+                console.log('Admin button clicked');
+                document.getElementById('startScreen').style.display = 'none';
+                document.getElementById('passwordPanel').style.display = 'block';
+                document.getElementById('adminPassword').value = '';
+            }
+
+            function closePasswordPanel() {
+                console.log('Closing password panel');
+                document.getElementById('passwordPanel').style.display = 'none';
+                document.getElementById('startScreen').style.display = 'block';
+            }
+
+            function verifyPassword() {
+                console.log('Verifying password');
+                try {
+                    const password = document.getElementById('adminPassword').value.trim();
+                    if (password === "1234") {
+                        console.log('Password correct, opening admin panel');
+                        document.getElementById('passwordPanel').style.display = 'none';
+                        document.getElementById('adminPanel').style.display = 'block';
+                        updateQuestionList();
+                    } else {
+                        console.log('Incorrect password');
+                        alert("Incorrect password!");
+                    }
+                } catch (e) {
+                    console.error('Error verifying password:', e);
+                    alert('Error verifying password.');
+                }
+            }
+
+            function closeAdmin() {
+                console.log('Closing admin panel');
+                document.getElementById('adminPanel').style.display = 'none';
+                document.getElementById('startScreen').style.display = 'block';
+                editingIndex = -1;
+                clearForm();
+            }
+
+            function saveQuestion() {
+                console.log('Save question clicked');
+                try {
+                    const question = document.getElementById('newQuestion').value.trim();
+                    const answers = [
+                        document.getElementById('newAnswer1').value.trim(),
+                        document.getElementById('newAnswer2').value.trim(),
+                        document.getElementById('newAnswer3').value.trim(),
+                        document.getElementById('newAnswer4').value.trim()
+                    ];
+                    const correct = parseInt(document.getElementById('correctAnswer').value);
+
+                    if (!question) {
+                        alert("Question cannot be empty!");
+                        return;
+                    }
+                    if (answers.some(a => !a)) {
+                        alert("All answers must be filled!");
+                        return;
+                    }
+                    if (isNaN(correct) || correct < 0 || correct > 3) {
+                        alert("Select a valid correct answer!");
+                        return;
+                    }
+                    if (question.length > 100 || answers.some(a => a.length > 50)) {
+                        alert("Question or answers too long!");
+                        return;
+                    }
+
+                    if (editingIndex === -1) {
+                        questions.push({ question, answers, correct });
+                        console.log('Question added:', question);
+                        alert("Question added!");
+                    } else {
+                        questions[editingIndex] = { question, answers, correct };
+                        console.log('Question edited:', question);
+                        alert("Question updated!");
+                        editingIndex = -1;
+                    }
+                    updateQuestionList();
+                    clearForm();
+                } catch (e) {
+                    console.error('Error saving question:', e);
+                    alert('Error saving question.');
+                }
+            }
+
+            function editQuestion(index) {
+                console.log(`Edit question ${index} clicked`);
+                try {
+                    editingIndex = index;
+                    const q = questions[index];
+                    document.getElementById('newQuestion').value = q.question;
+                    document.getElementById('newAnswer1').value = q.answers[0];
+                    document.getElementById('newAnswer2').value = q.answers[1];
+                    document.getElementById('newAnswer3').value = q.answers[2];
+                    document.getElementById('newAnswer4').value = q.answers[3];
+                    document.getElementById('correctAnswer').value = q.correct;
+                    document.getElementById('adminPanel').scrollIntoView();
+                } catch (e) {
+                    console.error('Error editing question:', e);
+                    alert('Error editing question.');
+                }
+            }
+
+            function removeQuestion(index) {
+                console.log(`Remove question ${index} clicked`);
+                try {
+                    if (confirm('Are you sure you want to delete this question?')) {
+                        questions.splice(index, 1);
+                        console.log('Question removed');
+                        updateQuestionList();
+                        alert('Question deleted!');
+                    }
+                } catch (e) {
+                    console.error('Error removing question:', e);
+                    alert('Error removing question.');
+                }
+            }
+
+            function updateQuestionList() {
+                console.log('Updating question list');
+                try {
+                    const questionList = document.getElementById('questionList');
+                    questionList.innerHTML = '';
+                    questions.forEach((q, i) => {
+                        const div = document.createElement('div');
+                        const truncated = q.question.length > 30 ? q.question.substring(0, 27) + '...' : q.question;
+                        div.textContent = `${i + 1}. ${truncated}`;
+                        const editBtn = document.createElement('button');
+                        editBtn.textContent = 'Edit';
+                        editBtn.onclick = () => editQuestion(i);
+                        const deleteBtn = document.createElement('button');
+                        deleteBtn.textContent = 'Delete';
+                        deleteBtn.onclick = () => removeQuestion(i);
+                        div.appendChild(editBtn);
+                        div.appendChild(deleteBtn);
+                        questionList.appendChild(div);
+                    });
+                } catch (e) {
+                    console.error('Error updating question list:', e);
+                    alert('Error updating question list.');
+                }
+            }
+
+            function clearForm() {
+                document.getElementById('newQuestion').value = '';
+                document.getElementById('newAnswer1').value = '';
+                document.getElementById('newAnswer2').value = '';
+                document.getElementById('newAnswer3').value = '';
+                document.getElementById('newAnswer4').value = '';
+                document.getElementById('correctAnswer').value = '0';
+            }
+        };
     </script>
 </body>
 </html>
